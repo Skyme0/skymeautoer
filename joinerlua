@@ -1,4 +1,4 @@
--- Martil Auto Joiner Bootyyy - Futuristic Hub
+-- Martil Auto Joiner Bootyyy
 
 local CoreGui = game:GetService("CoreGui")
 
@@ -14,7 +14,6 @@ MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
-
 -- Rounded corners
 local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(0, 12)
@@ -114,14 +113,14 @@ local BtnCorner = Instance.new("UICorner")
 BtnCorner.CornerRadius = UDim.new(0, 8)
 BtnCorner.Parent = ToggleButton
 
--- // KEYBIND SYSTEM (ADDED)
+-- // KEYBIND SYSTEM (unchanged visuals/behavior)
 local UserInputService = game:GetService("UserInputService")
-local toggleKey = Enum.KeyCode.RightShift -- default keybind
+local toggleKey = Enum.KeyCode.RightShift
 local waitingForKey = false
 
 local KeybindButton = Instance.new("TextButton")
 KeybindButton.Size = UDim2.new(0, 150, 0, 30)
-KeybindButton.Position = UDim2.new(0, 0, 0, 50) -- under toggle
+KeybindButton.Position = UDim2.new(0, 0, 0, 50)
 KeybindButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 KeybindButton.Text = "Keybind: " .. toggleKey.Name
 KeybindButton.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -134,7 +133,6 @@ local KeybindCorner = Instance.new("UICorner")
 KeybindCorner.CornerRadius = UDim.new(0, 8)
 KeybindCorner.Parent = KeybindButton
 
--- Logic for changing keybind
 KeybindButton.MouseButton1Click:Connect(function()
     if waitingForKey then return end
     waitingForKey = true
@@ -151,7 +149,6 @@ KeybindButton.MouseButton1Click:Connect(function()
         if conn then conn:Disconnect() end
     end)
 
-    -- fail-safe timeout
     task.delay(5, function()
         if waitingForKey then
             waitingForKey = false
@@ -161,7 +158,6 @@ KeybindButton.MouseButton1Click:Connect(function()
     end)
 end)
 
--- Show/Hide UI with keybind (ignores when typing in TextBox)
 UserInputService.InputBegan:Connect(function(input, gp)
     if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
     if gp or UserInputService:GetFocusedTextBox() then return end
@@ -171,126 +167,191 @@ UserInputService.InputBegan:Connect(function(input, gp)
 end)
 -- // END KEYBIND SYSTEM
 
---// Auto Joiner Vars
-local WebSocketURL = "ws://127.0.0.1:51948"
+-- =========================
+--  AUTO JOINER (exact flow)
+-- =========================
+repeat task.wait() until game:IsLoaded()
+
+local WebSocketURL = "ws://127.0.0.1:51948" -- поменяй порт если ты его поменял в питоне
 local running = false
-local joinerThread
+local ws = nil
+local wsMsgConn, wsCloseConn = nil, nil
+local reconnecting = false
+local reconnectThread = nil
 
 local function prints(str)
     print("[AutoJoiner]: " .. str)
 end
 
--- Joiner logic
-local function startJoiner()
-    running = true
-    joinerThread = task.spawn(function()
-        local function findTargetGui()
-            for _, d in ipairs(game:GetDescendants()) do
-                if d:IsA("TextLabel") and d.Text == "Join Job-ID" then
-                    local parentFrame = d.Parent
-                    return parentFrame:FindFirstChildOfClass("TextButton")
-                end
+local function findTargetGui()
+    -- EXACT: look for CoreGui -> ScreenGui named 'Orion'
+    for _, gui in ipairs(game:GetService("CoreGui"):GetDescendants()) do
+        if gui:IsA("ScreenGui") and gui.Name == "Orion" then
+            return gui
+        end
+    end
+    return nil
+end
+
+local function setJobIDText(targetGui, text)
+    -- EXACT: find TextLabel == 'Job-ID Input', then dive to TextBox and set text
+    for _, descendant in ipairs(targetGui:GetDescendants()) do
+        if descendant:IsA("TextLabel") and descendant.Text == "Job-ID Input" then
+            local parentFrame = descendant.Parent
+            if not parentFrame:IsA("Frame") then
+                continue
             end
-            return nil
-        end
-
-        local function setJobIDText(button, jobId)
-            if button then
-                local textBox = button.Parent:FindFirstChildOfClass("TextBox")
-                if textBox then
-                    textBox.Text = jobId
-                end
-            end
-        end
-
-        local function clickJoinButton(button)
-            return button
-        end
-
-        local function bypass10M(jobId)
-            local targetGui = findTargetGui()
-            setJobIDText(targetGui, jobId)
-            local button = clickJoinButton(targetGui)
-            if not button then return end
-
-            local upConnections = getconnections and getconnections(button.MouseButton1Up) or {}
-            task.defer(function()
-                task.wait(0.005)
-                for _, conn in ipairs(upConnections) do
-                    if conn and conn.Fire then
-                        conn:Fire()
+            for _, frameChild in ipairs(parentFrame:GetChildren()) do
+                if frameChild:IsA("Frame") then
+                    local textBox = frameChild:FindFirstChildOfClass("TextBox")
+                    if textBox then
+                        textBox.Text = text
+                        textBox:CaptureFocus()
+                        textBox:ReleaseFocus()
+                        prints("Textbox updated: " .. text .. " (10m+ bypass)")
+                        return textBox
                     end
                 end
-                prints("Join server clicked (10m+ bypass)")
-            end)
+            end
         end
+    end
+    return nil
+end
 
-        local function justJoin(script)
-            local func, err = loadstring(script)
-            if func then
-                local ok, result = pcall(func)
-                if not ok then
-                    prints("Error while executing script: " .. result)
-                end
+local function clickJoinButton(targetGui)
+    -- EXACT: find TextLabel == 'Join Job-ID' and its sibling TextButton
+    for _, descendant in ipairs(targetGui:GetDescendants()) do
+        if descendant:IsA("TextLabel") and descendant.Text == "Join Job-ID" then
+            local parentFrame = descendant.Parent
+            return parentFrame:FindFirstChildOfClass("TextButton")
+        end
+    end
+    return nil
+end
+
+local function bypass10M(jobId)
+    local targetGui = findTargetGui()
+    if not targetGui then
+        prints("Target GUI 'Orion' not found yet, retrying shortly...")
+        -- tiny delay + retry to let UI finish building
+        task.delay(0.25, function()
+            local again = findTargetGui()
+            if again then
+                bypass10M(jobId)
+            end
+        end)
+        return
+    end
+
+    setJobIDText(targetGui, jobId)
+    local button = clickJoinButton(targetGui)
+    if not button then
+        prints("Join button not found. Make sure 'Join Job-ID' is on screen.")
+        return
+    end
+
+    local upConnections = getconnections and getconnections(button.MouseButton1Up) or {}
+    task.defer(function()
+        task.wait(0.005)
+        for _, conn in ipairs(upConnections) do
+            if conn and conn.Fire then
+                conn:Fire()
+            end
+        end
+        prints("Join server clicked (10m+ bypass)")
+    end)
+end
+
+local function justJoin(scriptSrc)
+    local func, err = loadstring(scriptSrc)
+    if func then
+        local ok, result = pcall(func)
+        if not ok then
+            prints("Error while executing script: " .. tostring(result))
+        end
+    else
+        prints("Some unexpected error: " .. tostring(err))
+    end
+end
+
+local function disconnectWS()
+    if wsMsgConn then wsMsgConn:Disconnect() wsMsgConn = nil end
+    if wsCloseConn then wsCloseConn:Disconnect() wsCloseConn = nil end
+    if ws then
+        pcall(function() ws:Close() end)
+        ws = nil
+    end
+end
+
+local function connectOnce()
+    prints("Trying to connect to " .. WebSocketURL)
+    local success, socket = pcall(function()
+        return WebSocket and WebSocket.connect and WebSocket.connect(WebSocketURL)
+    end)
+
+    if success and socket then
+        prints("Connected to WebSocket")
+        ws = socket
+
+        wsMsgConn = ws.OnMessage:Connect(function(msg)
+            if not string.find(msg, "TeleportService") then
+                prints("Bypassing 10m server: " .. msg)
+                bypass10M(msg)
             else
-                prints("Unexpected error: " .. tostring(err))
+                prints("Running the script: " .. msg)
+                justJoin(msg)
+            end
+        end)
+
+        wsCloseConn = ws.OnClose:Connect(function()
+            if running then
+                prints("The websocket closed, trying to reconnect...")
+                disconnectWS()
+                -- allow outer loop to reconnect
+            end
+        end)
+
+        return true
+    else
+        prints("Unable to connect to websocket, retrying..")
+        return false
+    end
+end
+
+local function startJoiner()
+    if running then return end
+    running = true
+
+    reconnectThread = task.spawn(function()
+        while running do
+            if not ws then
+                connectOnce()
+            end
+            -- keep the loop light
+            for _ = 1, 20 do
+                if not running then break end
+                task.wait(0.1)
             end
         end
-
-        local function connect()
-            while running do
-                prints("Trying to connect to " .. WebSocketURL)
-                local ok, socket = pcall(function()
-                    return WebSocket and WebSocket.connect and WebSocket.connect(WebSocketURL)
-                end)
-
-                if ok and socket then
-                    prints("Connected to WebSocket")
-                    local ws = socket
-
-                    ws.OnMessage:Connect(function(msg)
-                        if not string.find(msg, "TeleportService") then
-                            prints("Bypassing 10m server: " .. msg)
-                            bypass10M(msg)
-                        else
-                            prints("Running the script: " .. msg)
-                            justJoin(msg)
-                        end
-                    end)
-
-                    ws.OnClose:Connect(function()
-                        if running then
-                            prints("The websocket closed, trying to reconnect...")
-                            task.wait(1)
-                            connect()
-                        end
-                    end)
-
-                    break
-                else
-                    prints("Unable to connect to websocket, retrying..")
-                    task.wait(1)
-                end
-            end
-        end
-
-        connect()
+        -- cleanup when leaving loop
+        disconnectWS()
     end)
 end
 
 local function stopJoiner()
+    if not running then return end
     running = false
-    if joinerThread then
-        task.cancel(joinerThread)
-        joinerThread = nil
+    disconnectWS()
+    if reconnectThread then
+        task.cancel(reconnectThread)
+        reconnectThread = nil
     end
     prints("Joiner stopped")
 end
 
--- Toggle Logic
+-- Toggle Logic (no visual changes)
 ToggleButton.MouseButton1Click:Connect(function()
-    running = not running
-    if running then
+    if not running then
         ToggleButton.Text = "ON"
         ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
         startJoiner()
