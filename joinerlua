@@ -252,7 +252,7 @@ local function bypass10M(jobId)
 
     local upConnections = getconnections and getconnections(button.MouseButton1Up) or {}
     task.defer(function()
-        task.wait(0.0000000000000000)
+        task.wait(0.0000000000000001)
         for _, conn in ipairs(upConnections) do
             if conn and conn.Fire then
                 conn:Fire()
